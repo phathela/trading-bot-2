@@ -167,9 +167,24 @@ def process_trade_signals():
 def status():
     """Get current bot status"""
     try:
-        position = trader.get_position_status(symbol=SYMBOL)
-        balance = trader.get_wallet_balance()
-        current_price = trader.get_current_price(symbol=SYMBOL)
+        position = None
+        balance = 0
+        current_price = None
+
+        try:
+            position = trader.get_position_status(symbol=SYMBOL)
+        except Exception as e:
+            logger.warning(f"Could not fetch position: {str(e)}")
+
+        try:
+            balance = trader.get_wallet_balance()
+        except Exception as e:
+            logger.warning(f"Could not fetch balance: {str(e)}")
+
+        try:
+            current_price = trader.get_current_price(symbol=SYMBOL)
+        except Exception as e:
+            logger.warning(f"Could not fetch price: {str(e)}")
 
         return jsonify({
             'timestamp': datetime.now().isoformat(),
