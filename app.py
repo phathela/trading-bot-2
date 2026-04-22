@@ -69,12 +69,21 @@ def webhook():
         logger.error(f"Error processing webhook: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/webhook/3commas', methods=['POST'])
-def webhook_3commas():
-    """Accept 3Commas format webhooks and convert to bot format"""
+@app.route('/webhook/3commas/a', methods=['POST'])
+def webhook_3commas_a():
+    """Accept 3Commas format webhooks for Indicator A"""
+    return process_3commas_webhook('indicator_a')
+
+@app.route('/webhook/3commas/b', methods=['POST'])
+def webhook_3commas_b():
+    """Accept 3Commas format webhooks for Indicator B"""
+    return process_3commas_webhook('indicator_b')
+
+def process_3commas_webhook(indicator):
+    """Convert 3Commas format to bot format for specified indicator"""
     try:
         data = request.get_json()
-        logger.info(f"3Commas webhook received: {data}")
+        logger.info(f"3Commas webhook received for {indicator}: {data}")
 
         action = data.get('action', '').lower()
 
@@ -91,20 +100,21 @@ def webhook_3commas():
             logger.warning(f"Unknown 3Commas action: {action}")
             return jsonify({'error': f'Unknown action: {action}'}), 400
 
-        logger.info(f"3Commas action converted: {action} → {signal}")
+        logger.info(f"3Commas action converted: {action} → {signal} for {indicator}")
 
-        # Set both indicators to same signal (since 3Commas is single source)
-        indicator_signals['indicator_a'] = signal
-        indicator_signals['indicator_b'] = signal
+        # Set the specified indicator signal
+        indicator_signals[indicator] = signal
         indicator_signals['last_update'] = datetime.now().isoformat()
 
-        logger.info(f"Both indicators set to: {signal}")
+        logger.info(f"{indicator}: {signal}")
+        logger.info(f"Indicator A: {indicator_signals['indicator_a']}, Indicator B: {indicator_signals['indicator_b']}")
 
-        # Process the aligned signals
+        # Process the signals (will only execute if both aligned)
         result = process_trade_signals()
 
         return jsonify({
             'status': 'received',
+            'indicator': indicator,
             'action': action,
             'signal': signal,
             'trade_action': result,
