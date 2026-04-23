@@ -22,10 +22,10 @@ class BybitTrader:
             api_secret=api_secret
         )
 
-        self.leverage = 10
+        self.leverage = 8
         self.balance_usage = 0.90
-        self.stop_loss_percent = 0.24
-        self.stop_loss_price_percent = 0.024
+        self.stop_loss_percent = 0.20
+        self.stop_loss_price_percent = 0.20
 
         self.position = None
         self.entry_price = None
