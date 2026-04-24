@@ -82,8 +82,12 @@ def webhook_3commas_b():
 def process_3commas_webhook(indicator):
     """Convert 3Commas format to bot format for specified indicator"""
     try:
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True)
         logger.info(f"3Commas webhook received for {indicator}: {data}")
+
+        if data is None:
+            logger.warning(f"Failed to parse JSON body for {indicator} webhook — missing or invalid Content-Type")
+            return jsonify({'error': 'Invalid or missing JSON body. Ensure the request body is valid JSON.'}), 400
 
         action = data.get('action', '').lower()
 
