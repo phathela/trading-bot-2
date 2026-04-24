@@ -133,9 +133,22 @@ def process_3commas_webhook(indicator):
 def process_trade_signals():
     """Process signals from both indicators and execute trades.
 
-    Opening a position requires BOTH indicators to agree on direction.
-    Closing a position happens immediately when EITHER indicator signals
-    the opposite direction — no confirmation from the second indicator needed.
+    Rules:
+    - No position open:
+        * Either signal is None → Wait
+        * Both Buy → Open LONG
+        * Both Sell → Open SHORT
+        * One Buy + one Sell (disagree) → Wait
+
+    - LONG position open:
+        * Either signal is None → Hold LONG (wait for clarity)
+        * Both Buy → Hold LONG
+        * Both Sell OR one Buy + one Sell (disagree) → Close LONG immediately
+
+    - SHORT position open:
+        * Either signal is None → Hold SHORT (wait for clarity)
+        * Both Sell → Hold SHORT
+        * Both Buy OR one Buy + one Sell (disagree) → Close SHORT immediately
     """
     signal_a = indicator_signals['indicator_a']
     signal_b = indicator_signals['indicator_b']
@@ -147,7 +160,7 @@ def process_trade_signals():
     # ── No position open ────────────────────────────────────────────────────
     if not trade_active:
         if signal_a is None or signal_b is None:
-            logger.info("Waiting for both indicators to signal before opening a position")
+            logger.info("Waiting for both indicators before opening a position")
             return None
 
         if signal_a == 'Buy' and signal_b == 'Buy':
@@ -166,40 +179,55 @@ def process_trade_signals():
                 return 'OPEN_SHORT'
             return 'OPEN_SHORT_FAILED'
 
-        logger.info(f"Indicators not aligned (A={signal_a}, B={signal_b}) — no position opened")
+        # One Buy + one Sell: indicators disagree — wait
+        logger.info(f"Indicators disagree (A={signal_a}, B={signal_b}) — waiting for alignment")
         return None
 
     # ── LONG position is open ───────────────────────────────────────────────
     if position_side == 'long':
-        if signal_a == 'Sell' or signal_b == 'Sell':
-            logger.info(
-                f"LONG position: indicator change detected (A={signal_a}, B={signal_b}) "
-                "— closing LONG immediately"
-            )
-            if trader.close_position(symbol=SYMBOL):
-                indicator_signals['trade_active'] = False
-                indicator_signals['position_side'] = None
-                return 'CLOSE_LONG'
-            return 'CLOSE_LONG_FAILED'
+        # Hold if either signal is missing — not enough information to act
+        if signal_a is None or signal_b is None:
+            logger.info(f"LONG position: signal missing (A={signal_a}, B={signal_b}) — holding")
+            return 'HOLD_LONG'
 
-        logger.info("LONG position: both indicators still BUY — holding")
-        return 'HOLD_LONG'
+        # Hold if both still agree on BUY
+        if signal_a == 'Buy' and signal_b == 'Buy':
+            logger.info("LONG position: both indicators still BUY — holding")
+            return 'HOLD_LONG'
+
+        # Close on disagreement (one Buy + one Sell) or both flipping to Sell
+        logger.info(
+            f"LONG position: indicators disagree or flipped (A={signal_a}, B={signal_b}) "
+            "— closing LONG immediately"
+        )
+        if trader.close_position(symbol=SYMBOL):
+            indicator_signals['trade_active'] = False
+            indicator_signals['position_side'] = None
+            return 'CLOSE_LONG'
+        return 'CLOSE_LONG_FAILED'
 
     # ── SHORT position is open ──────────────────────────────────────────────
     if position_side == 'short':
-        if signal_a == 'Buy' or signal_b == 'Buy':
-            logger.info(
-                f"SHORT position: indicator change detected (A={signal_a}, B={signal_b}) "
-                "— closing SHORT immediately"
-            )
-            if trader.close_position(symbol=SYMBOL):
-                indicator_signals['trade_active'] = False
-                indicator_signals['position_side'] = None
-                return 'CLOSE_SHORT'
-            return 'CLOSE_SHORT_FAILED'
+        # Hold if either signal is missing — not enough information to act
+        if signal_a is None or signal_b is None:
+            logger.info(f"SHORT position: signal missing (A={signal_a}, B={signal_b}) — holding")
+            return 'HOLD_SHORT'
 
-        logger.info("SHORT position: both indicators still SELL — holding")
-        return 'HOLD_SHORT'
+        # Hold if both still agree on SELL
+        if signal_a == 'Sell' and signal_b == 'Sell':
+            logger.info("SHORT position: both indicators still SELL — holding")
+            return 'HOLD_SHORT'
+
+        # Close on disagreement (one Buy + one Sell) or both flipping to Buy
+        logger.info(
+            f"SHORT position: indicators disagree or flipped (A={signal_a}, B={signal_b}) "
+            "— closing SHORT immediately"
+        )
+        if trader.close_position(symbol=SYMBOL):
+            indicator_signals['trade_active'] = False
+            indicator_signals['position_side'] = None
+            return 'CLOSE_SHORT'
+        return 'CLOSE_SHORT_FAILED'
 
     # ── Unexpected state ────────────────────────────────────────────────────
     logger.warning(f"Unexpected state — trade_active={trade_active}, position_side={position_side}")
