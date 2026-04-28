@@ -254,3 +254,68 @@ class BybitTrader:
         except Exception as e:
             logger.error(f"Error getting position status: {str(e)}")
             return None
+
+    def sync_position_from_exchange(self, symbol="BTCUSDT"):
+        """Query Bybit for the real open position and sync internal state.
+
+        Returns a dict with:
+            - 'active'  (bool)   : whether a position is open
+            - 'side'    (str|None): 'long', 'short', or None
+        """
+        try:
+            response = self.session.get_positions(
+                category="linear",
+                symbol=symbol
+            )
+
+            if response['retCode'] != 0:
+                logger.error(f"sync_position_from_exchange: API error — {response['retMsg']}")
+                return {'active': False, 'side': None}
+
+            positions = response['result']['list']
+
+            # Bybit returns a list entry even when flat; a real position has size > 0
+            for pos in positions:
+                size = float(pos.get('size', 0))
+                if size <= 0:
+                    continue
+
+                bybit_side = pos.get('side', '')  # 'Buy' = long, 'Sell' = short
+                avg_price = float(pos.get('avgPrice', 0) or 0)
+
+                if bybit_side == 'Buy':
+                    internal_side = 'long'
+                    order_side = 'Buy'
+                elif bybit_side == 'Sell':
+                    internal_side = 'short'
+                    order_side = 'Sell'
+                else:
+                    logger.warning(f"sync_position_from_exchange: unexpected side value '{bybit_side}' — skipping")
+                    continue
+
+                # Restore trader's internal position so close_position() works correctly
+                self.position = {
+                    'symbol': symbol,
+                    'side': order_side,
+                    'qty': size,
+                    'order_id': None,          # not available from position snapshot
+                    'timestamp': datetime.now().isoformat(),
+                    'entry_price': avg_price,
+                }
+                self.entry_price = avg_price
+
+                logger.info(
+                    f"sync_position_from_exchange: found open {internal_side.upper()} position — "
+                    f"qty={size}, avg_entry={avg_price}"
+                )
+                return {'active': True, 'side': internal_side}
+
+            # No open position found
+            self.position = None
+            self.entry_price = None
+            logger.info("sync_position_from_exchange: no open position on Bybit")
+            return {'active': False, 'side': None}
+
+        except Exception as e:
+            logger.error(f"sync_position_from_exchange: exception — {str(e)}")
+            return {'active': False, 'side': None}
