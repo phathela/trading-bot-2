@@ -31,6 +31,36 @@ indicator_signals = {
     'position_side': None  # 'long', 'short', or None
 }
 
+
+def sync_position_state():
+    """Query Bybit on startup and align indicator_signals with the real position.
+
+    This makes the bot resilient to restarts: instead of assuming no position
+    is open, it checks Bybit and restores the correct trade_active / position_side
+    state before any webhook is processed.
+    """
+    logger.info("=== Startup position sync: querying Bybit for real position state ===")
+    try:
+        result = trader.sync_position_from_exchange(symbol=SYMBOL)
+        indicator_signals['trade_active'] = result['active']
+        indicator_signals['position_side'] = result['side']
+
+        if result['active']:
+            logger.info(
+                f"Startup sync complete — POSITION FOUND: "
+                f"trade_active=True, position_side='{result['side']}'"
+            )
+        else:
+            logger.info(
+                "Startup sync complete — NO OPEN POSITION: "
+                "trade_active=False, position_side=None"
+            )
+    except Exception as e:
+        logger.error(f"Startup position sync failed — bot will start with default state: {str(e)}")
+
+
+sync_position_state()
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()}), 200
