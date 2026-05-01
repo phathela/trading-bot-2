@@ -53,4 +53,4 @@ def sync_position_state():
 time.sleep(2)  # Wait 2 seconds to avoid Bybit rate limit on startup
 sync_position_state()
 trader.set_leverage(symbol=SYMBOL, leverage=8)  # Explicitly set 8x leverage on Bybit
-logger.info(f"Bot initialized with leverage={trader.leverage}x, balance_usage={trader.balance_usage*100}%"
+logger.info(f"Bot initialized with leverage={trader.leverage}x, balance_usage={trader.balance_usage*100}%")
