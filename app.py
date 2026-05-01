@@ -4,6 +4,7 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from bybit_trader import BybitTrader
 from datetime import datetime
+import time
 
 load_dotenv()
 
@@ -59,6 +60,9 @@ def sync_position_state():
         logger.error(f"Startup position sync failed — bot will start with default state: {str(e)}")
 
 
+trader.set_leverage(symbol=SYMBOL, leverage=8)
+trader.balance_usage = 0.90
+time.sleep(1)
 sync_position_state()
 
 @app.route('/health', methods=['GET'])
