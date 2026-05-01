@@ -6,10 +6,8 @@ from bybit_trader import BybitTrader
 from datetime import datetime
 
 load_dotenv()
-
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -23,28 +21,21 @@ TESTNET = os.getenv('BYBIT_TESTNET', 'True').lower() == 'true'
 
 trader = BybitTrader(api_key=API_KEY, api_secret=API_SECRET, testnet=TESTNET)
 
+# Simplified state tracking for single indicator
 indicator_signals = {
-    'indicator_a': None,
-    'indicator_b': None,
+    'last_action': None,
     'last_update': None,
     'trade_active': False,
     'position_side': None  # 'long', 'short', or None
 }
 
-
 def sync_position_state():
-    """Query Bybit on startup and align indicator_signals with the real position.
-
-    This makes the bot resilient to restarts: instead of assuming no position
-    is open, it checks Bybit and restores the correct trade_active / position_side
-    state before any webhook is processed.
-    """
+    """Query Bybit on startup and align state with the real position."""
     logger.info("=== Startup position sync: querying Bybit for real position state ===")
     try:
         result = trader.sync_position_from_exchange(symbol=SYMBOL)
         indicator_signals['trade_active'] = result['active']
         indicator_signals['position_side'] = result['side']
-
         if result['active']:
             logger.info(
                 f"Startup sync complete — POSITION FOUND: "
@@ -58,209 +49,100 @@ def sync_position_state():
     except Exception as e:
         logger.error(f"Startup position sync failed — bot will start with default state: {str(e)}")
 
-
 sync_position_state()
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()}), 200
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
+@app.route('/webhook/3commas/a', methods=['POST'])
+def webhook_3commas_a():
+    """Accept webhook with four action types: enter_long, enter_short, enter_exit_long, enter_exit_short"""
     try:
-        auth_key = request.headers.get('X-Webhook-Key')
-        if auth_key != WEBHOOK_KEY:
-            logger.warning(f"Unauthorized webhook attempt with key: {auth_key}")
-            return jsonify({'error': 'Unauthorized'}), 401
-
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True)
         logger.info(f"Webhook received: {data}")
-
-        indicator = data.get('indicator')
-        signal = data.get('signal')
-
-        if indicator not in ['indicator_a', 'indicator_b'] or signal not in ['Buy', 'Sell']:
-            return jsonify({'error': 'Invalid indicator or signal'}), 400
-
-        indicator_signals[indicator] = signal
-        indicator_signals['last_update'] = datetime.now().isoformat()
-
-        logger.info(f"{indicator}: {signal}")
-        logger.info(f"Indicator A: {indicator_signals['indicator_a']}, Indicator B: {indicator_signals['indicator_b']}")
-
-        result = process_trade_signals()
-
+        
+        if data is None:
+            logger.warning("Failed to parse JSON body — missing or invalid Content-Type")
+            return jsonify({'error': 'Invalid or missing JSON body'}), 400
+        
+        action = data.get('action', '').lower()
+        
+        # Validate action
+        valid_actions = ['enter_long', 'enter_short', 'enter_exit_long', 'enter_exit_short']
+        if action not in valid_actions:
+            logger.warning(f"Unknown action: {action}")
+            return jsonify({'error': f'Unknown action: {action}. Valid actions: {valid_actions}'}), 400
+        
+        logger.info(f"Processing action: {action}")
+        result = execute_action(action)
+        
         return jsonify({
             'status': 'received',
-            'indicator_signals': indicator_signals,
-            'trade_action': result
+            'action': action,
+            'trade_action': result,
+            'indicator_signals': indicator_signals
         }), 200
-
+        
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/webhook/3commas/a', methods=['POST'])
-def webhook_3commas_a():
-    """Accept 3Commas format webhooks for Indicator A"""
-    return process_3commas_webhook('indicator_a')
-
-@app.route('/webhook/3commas/b', methods=['POST'])
-def webhook_3commas_b():
-    """Accept 3Commas format webhooks for Indicator B"""
-    return process_3commas_webhook('indicator_b')
-
-def process_3commas_webhook(indicator):
-    """Convert 3Commas format to bot format for specified indicator"""
-    try:
-        data = request.get_json(force=True, silent=True)
-        logger.info(f"3Commas webhook received for {indicator}: {data}")
-
-        if data is None:
-            logger.warning(f"Failed to parse JSON body for {indicator} webhook — missing or invalid Content-Type")
-            return jsonify({'error': 'Invalid or missing JSON body. Ensure the request body is valid JSON.'}), 400
-
-        action = data.get('action', '').lower()
-
-        # Convert 3Commas action to buy/sell signal
-        if action == 'enter_long':
-            signal = 'Buy'
-        elif action == 'enter_short':
-            signal = 'Sell'
-        elif action == 'close_long':
-            signal = 'Sell'
-        elif action == 'close_short':
-            signal = 'Buy'
+def execute_action(action):
+    """Execute the specified action directly"""
+    
+    if action == 'enter_long':
+        logger.info("Action: ENTER_LONG — opening long position")
+        if trader.open_position(symbol=SYMBOL, side='Buy'):
+            indicator_signals['trade_active'] = True
+            indicator_signals['position_side'] = 'long'
+            indicator_signals['last_action'] = 'enter_long'
+            indicator_signals['last_update'] = datetime.now().isoformat()
+            return 'ENTER_LONG_SUCCESS'
         else:
-            logger.warning(f"Unknown 3Commas action: {action}")
-            return jsonify({'error': f'Unknown action: {action}'}), 400
-
-        logger.info(f"3Commas action converted: {action} → {signal} for {indicator}")
-
-        # Set the specified indicator signal
-        indicator_signals[indicator] = signal
-        indicator_signals['last_update'] = datetime.now().isoformat()
-
-        logger.info(f"{indicator}: {signal}")
-        logger.info(f"Indicator A: {indicator_signals['indicator_a']}, Indicator B: {indicator_signals['indicator_b']}")
-
-        # Process the signals (will only execute if both aligned)
-        result = process_trade_signals()
-
-        return jsonify({
-            'status': 'received',
-            'indicator': indicator,
-            'action': action,
-            'signal': signal,
-            'trade_action': result,
-            'indicator_signals': indicator_signals
-        }), 200
-
-    except Exception as e:
-        logger.error(f"Error processing 3Commas webhook: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-def process_trade_signals():
-    """Process signals from both indicators and execute trades.
-
-    Rules:
-    - No position open:
-        * Either signal is None → Wait
-        * Both Buy → Open LONG
-        * Both Sell → Open SHORT
-        * One Buy + one Sell (disagree) → Wait
-
-    - LONG position open:
-        * Either signal is None → Hold LONG (wait for clarity)
-        * Both Buy → Hold LONG
-        * Both Sell OR one Buy + one Sell (disagree) → Close LONG immediately
-
-    - SHORT position open:
-        * Either signal is None → Hold SHORT (wait for clarity)
-        * Both Sell → Hold SHORT
-        * Both Buy OR one Buy + one Sell (disagree) → Close SHORT immediately
-    """
-    signal_a = indicator_signals['indicator_a']
-    signal_b = indicator_signals['indicator_b']
-    trade_active = indicator_signals['trade_active']
-    position_side = indicator_signals['position_side']
-
-    logger.info(f"Processing signals — A={signal_a}, B={signal_b}, active={trade_active}, side={position_side}")
-
-    # ── No position open ────────────────────────────────────────────────────
-    if not trade_active:
-        if signal_a is None or signal_b is None:
-            logger.info("Waiting for both indicators before opening a position")
-            return None
-
-        if signal_a == 'Buy' and signal_b == 'Buy':
-            logger.info("Both indicators signal BUY — opening LONG position")
-            if trader.open_position(symbol=SYMBOL, side='Buy'):
-                indicator_signals['trade_active'] = True
-                indicator_signals['position_side'] = 'long'
-                return 'OPEN_LONG'
-            return 'OPEN_LONG_FAILED'
-
-        if signal_a == 'Sell' and signal_b == 'Sell':
-            logger.info("Both indicators signal SELL — opening SHORT position")
-            if trader.open_position(symbol=SYMBOL, side='Sell'):
-                indicator_signals['trade_active'] = True
-                indicator_signals['position_side'] = 'short'
-                return 'OPEN_SHORT'
-            return 'OPEN_SHORT_FAILED'
-
-        # One Buy + one Sell: indicators disagree — wait
-        logger.info(f"Indicators disagree (A={signal_a}, B={signal_b}) — waiting for alignment")
-        return None
-
-    # ── LONG position is open ───────────────────────────────────────────────
-    if position_side == 'long':
-        # Hold if either signal is missing — not enough information to act
-        if signal_a is None or signal_b is None:
-            logger.info(f"LONG position: signal missing (A={signal_a}, B={signal_b}) — holding")
-            return 'HOLD_LONG'
-
-        # Hold if both still agree on BUY
-        if signal_a == 'Buy' and signal_b == 'Buy':
-            logger.info("LONG position: both indicators still BUY — holding")
-            return 'HOLD_LONG'
-
-        # Close on disagreement (one Buy + one Sell) or both flipping to Sell
-        logger.info(
-            f"LONG position: indicators disagree or flipped (A={signal_a}, B={signal_b}) "
-            "— closing LONG immediately"
-        )
+            return 'ENTER_LONG_FAILED'
+    
+    elif action == 'enter_short':
+        logger.info("Action: ENTER_SHORT — opening short position")
+        if trader.open_position(symbol=SYMBOL, side='Sell'):
+            indicator_signals['trade_active'] = True
+            indicator_signals['position_side'] = 'short'
+            indicator_signals['last_action'] = 'enter_short'
+            indicator_signals['last_update'] = datetime.now().isoformat()
+            return 'ENTER_SHORT_SUCCESS'
+        else:
+            return 'ENTER_SHORT_FAILED'
+    
+    elif action == 'enter_exit_long':
+        logger.info("Action: ENTER_EXIT_LONG — closing long position")
+        if indicator_signals['position_side'] != 'long':
+            logger.warning(f"Cannot close long: no long position open (current: {indicator_signals['position_side']})")
+            return 'ENTER_EXIT_LONG_NO_POSITION'
+        
         if trader.close_position(symbol=SYMBOL):
             indicator_signals['trade_active'] = False
             indicator_signals['position_side'] = None
-            return 'CLOSE_LONG'
-        return 'CLOSE_LONG_FAILED'
-
-    # ── SHORT position is open ──────────────────────────────────────────────
-    if position_side == 'short':
-        # Hold if either signal is missing — not enough information to act
-        if signal_a is None or signal_b is None:
-            logger.info(f"SHORT position: signal missing (A={signal_a}, B={signal_b}) — holding")
-            return 'HOLD_SHORT'
-
-        # Hold if both still agree on SELL
-        if signal_a == 'Sell' and signal_b == 'Sell':
-            logger.info("SHORT position: both indicators still SELL — holding")
-            return 'HOLD_SHORT'
-
-        # Close on disagreement (one Buy + one Sell) or both flipping to Buy
-        logger.info(
-            f"SHORT position: indicators disagree or flipped (A={signal_a}, B={signal_b}) "
-            "— closing SHORT immediately"
-        )
+            indicator_signals['last_action'] = 'enter_exit_long'
+            indicator_signals['last_update'] = datetime.now().isoformat()
+            return 'ENTER_EXIT_LONG_SUCCESS'
+        else:
+            return 'ENTER_EXIT_LONG_FAILED'
+    
+    elif action == 'enter_exit_short':
+        logger.info("Action: ENTER_EXIT_SHORT — closing short position")
+        if indicator_signals['position_side'] != 'short':
+            logger.warning(f"Cannot close short: no short position open (current: {indicator_signals['position_side']})")
+            return 'ENTER_EXIT_SHORT_NO_POSITION'
+        
         if trader.close_position(symbol=SYMBOL):
             indicator_signals['trade_active'] = False
             indicator_signals['position_side'] = None
-            return 'CLOSE_SHORT'
-        return 'CLOSE_SHORT_FAILED'
-
-    # ── Unexpected state ────────────────────────────────────────────────────
-    logger.warning(f"Unexpected state — trade_active={trade_active}, position_side={position_side}")
+            indicator_signals['last_action'] = 'enter_exit_short'
+            indicator_signals['last_update'] = datetime.now().isoformat()
+            return 'ENTER_EXIT_SHORT_SUCCESS'
+        else:
+            return 'ENTER_EXIT_SHORT_FAILED'
+    
     return None
 
 @app.route('/status', methods=['GET'])
@@ -270,25 +152,27 @@ def status():
         position = None
         balance = 0
         current_price = None
-
+        
         try:
             position = trader.get_position_status(symbol=SYMBOL)
         except Exception as e:
             logger.warning(f"Could not fetch position: {str(e)}")
-
+        
         try:
             balance = trader.get_wallet_balance()
         except Exception as e:
             logger.warning(f"Could not fetch balance: {str(e)}")
-
+        
         try:
             current_price = trader.get_current_price(symbol=SYMBOL)
         except Exception as e:
             logger.warning(f"Could not fetch price: {str(e)}")
-
+        
         return jsonify({
             'timestamp': datetime.now().isoformat(),
-            'indicator_signals': indicator_signals,
+            'last_action': indicator_signals['last_action'],
+            'trade_active': indicator_signals['trade_active'],
+            'position_side': indicator_signals['position_side'],
             'position': position,
             'balance': balance,
             'current_price': current_price,
@@ -306,13 +190,15 @@ def manual_open_trade():
         data = request.get_json() or {}
         side = data.get('side', 'Buy')
         symbol = data.get('symbol', SYMBOL)
-
+        
         if trader.open_position(symbol=symbol, side=side):
             indicator_signals['trade_active'] = True
+            indicator_signals['position_side'] = 'long' if side == 'Buy' else 'short'
+            indicator_signals['last_action'] = 'manual_open'
+            indicator_signals['last_update'] = datetime.now().isoformat()
             return jsonify({'status': 'success', 'action': 'position_opened'}), 200
         else:
             return jsonify({'status': 'failed', 'action': 'position_open_failed'}), 400
-
     except Exception as e:
         logger.error(f"Error opening trade: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -323,13 +209,15 @@ def manual_close_trade():
     try:
         data = request.get_json() or {}
         symbol = data.get('symbol', SYMBOL)
-
+        
         if trader.close_position(symbol=symbol):
             indicator_signals['trade_active'] = False
+            indicator_signals['position_side'] = None
+            indicator_signals['last_action'] = 'manual_close'
+            indicator_signals['last_update'] = datetime.now().isoformat()
             return jsonify({'status': 'success', 'action': 'position_closed'}), 200
         else:
             return jsonify({'status': 'failed', 'action': 'position_close_failed'}), 400
-
     except Exception as e:
         logger.error(f"Error closing trade: {str(e)}")
         return jsonify({'error': str(e)}), 500
