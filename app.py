@@ -50,11 +50,6 @@ def sync_position_state():
     except Exception as e:
         logger.error(f"Startup position sync failed — bot will start with default state: {str(e)}")
 
-time.sleep(2)  # Wait 2 seconds to avoid Bybit rate limit on startup
-sync_position_state()
-trader.set_leverage(symbol=SYMBOL, leverage=8)  # Explicitly set 8x leverage on Bybit
-logger.info(f"Bot initialized with leverage={trader.leverage}x, balance_usage={trader.balance_usage*100}%")
-
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()}), 200
@@ -237,6 +232,11 @@ def get_config():
         'stop_loss_price_percent': trader.stop_loss_price_percent * 100,
         'testnet': TESTNET
     }), 200
+
+time.sleep(2)  # Wait 2 seconds to avoid Bybit rate limit on startup
+sync_position_state()
+trader.set_leverage(symbol=SYMBOL, leverage=8)  # Explicitly set 8x leverage on Bybit
+logger.info(f"Bot initialized with leverage={trader.leverage}x, balance_usage={trader.balance_usage*100}%")
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
