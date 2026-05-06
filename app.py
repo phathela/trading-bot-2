@@ -33,13 +33,13 @@ indicator_signals = {
 
 
 def sync_position_state():
-    """Query Bybit on startup and align indicator_signals with the real position.
+    """Query Bybit and align indicator_signals with the real position state.
 
-    This makes the bot resilient to restarts: instead of assuming no position
-    is open, it checks Bybit and restores the correct trade_active / position_side
-    state before any webhook is processed.
+    Called both on startup and at the start of every process_trade_signals()
+    invocation so that positions closed externally (stop loss, manual close,
+    another bot) are detected before any trade action is attempted.
     """
-    logger.info("=== Startup position sync: querying Bybit for real position state ===")
+    logger.info("=== Position sync: querying Bybit for real position state ===")
     try:
         result = trader.sync_position_from_exchange(symbol=SYMBOL)
         indicator_signals['trade_active'] = result['active']
@@ -47,16 +47,16 @@ def sync_position_state():
 
         if result['active']:
             logger.info(
-                f"Startup sync complete — POSITION FOUND: "
+                f"Position sync complete — POSITION FOUND: "
                 f"trade_active=True, position_side='{result['side']}'"
             )
         else:
             logger.info(
-                "Startup sync complete — NO OPEN POSITION: "
+                "Position sync complete — NO OPEN POSITION: "
                 "trade_active=False, position_side=None"
             )
     except Exception as e:
-        logger.error(f"Startup position sync failed — bot will start with default state: {str(e)}")
+        logger.error(f"Position sync failed — proceeding with current state: {str(e)}")
 
 
 try:
@@ -185,6 +185,11 @@ def process_trade_signals():
         * Both Sell → Hold SHORT
         * Both Buy OR one Buy + one Sell (disagree) → Close SHORT immediately
     """
+    # Sync with Bybit before acting so that positions closed externally
+    # (stop loss, manual close, another bot) are detected immediately,
+    # preventing 110017 "current position is zero" errors.
+    sync_position_state()
+
     signal_a = indicator_signals['indicator_a']
     signal_b = indicator_signals['indicator_b']
     trade_active = indicator_signals['trade_active']
