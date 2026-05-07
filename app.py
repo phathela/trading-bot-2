@@ -149,12 +149,6 @@ def process_3commas_webhook(indicator):
             logger.warning(f"Failed to parse JSON body for {indicator} webhook — missing or invalid Content-Type")
             return jsonify({'error': 'Invalid or missing JSON body. Ensure the request body is valid JSON.'}), 400
 
-        # Authenticate via header or body key
-        auth_key = request.headers.get('X-Webhook-Key') or request.headers.get('Authorization', '').replace('Bearer ', '') or data.get('key', '')
-        if auth_key != WEBHOOK_KEY:
-            logger.warning(f"Unauthorized webhook attempt with key: {auth_key}")
-            return jsonify({'error': 'Unauthorized'}), 401
-
         action = data.get('action', '').lower()
 
         # Convert 3Commas action to buy/sell signal
