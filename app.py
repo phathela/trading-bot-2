@@ -1,5 +1,7 @@
 import os
 import logging
+import threading
+import time
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from bybit_trader import BybitTrader
@@ -17,7 +19,7 @@ logging.basicConfig(
 
 API_KEY = os.getenv('BYBIT_API_KEY', '')
 API_SECRET = os.getenv('BYBIT_API_SECRET', '')
-WEBHOOK_KEY = os.getenv('WEBHOOK_KEY', 'default_webhook_key')
+WEBHOOK_KEY = os.getenv('WEBHOOK_KEY') or os.getenv('WEBHOOK_SECRET', 'default_webhook_key')
 SYMBOL = os.getenv('SYMBOL', 'BTCUSDT')
 TESTNET = os.getenv('BYBIT_TESTNET', 'True').lower() == 'true'
 
@@ -46,9 +48,19 @@ def sync_position_state():
         indicator_signals['position_side'] = result['side']
 
         if result['active']:
+            # Initialize indicator signals to match the open position
+            # so signals aren't lost on restart (TradingView only re-sends on
+            # condition change, so a restart would leave one indicator null)
+            if result['side'] == 'long':
+                indicator_signals['indicator_a'] = 'Buy'
+                indicator_signals['indicator_b'] = 'Buy'
+            elif result['side'] == 'short':
+                indicator_signals['indicator_a'] = 'Sell'
+                indicator_signals['indicator_b'] = 'Sell'
             logger.info(
                 f"Startup sync complete — POSITION FOUND: "
-                f"trade_active=True, position_side='{result['side']}'"
+                f"trade_active=True, position_side='{result['side']}', "
+                f"indicators initialized to match position"
             )
         else:
             logger.info(
@@ -59,12 +71,19 @@ def sync_position_state():
         logger.error(f"Startup position sync failed — bot will start with default state: {str(e)}")
 
 
-try:
-    trader.balance_usage = 0.90
-    trader.set_leverage(symbol=SYMBOL, leverage=8)
-    sync_position_state()
-except Exception as e:
-    logger.error(f"Startup initialization failed: {str(e)}")
+# Initialize in background so gunicorn starts serving immediately
+def _startup():
+    """Run startup tasks after Flask is ready (non-blocking)."""
+    try:
+        time.sleep(2)  # Avoid Bybit rate limit on startup
+        trader.balance_usage = 0.90
+        trader.set_leverage(symbol=SYMBOL, leverage=8)
+        sync_position_state()
+        logger.info(f"Bot initialized with leverage={trader.leverage}x, balance_usage={trader.balance_usage*100}%")
+    except Exception as e:
+        logger.error(f"Startup init failed (bot running in degraded mode): {str(e)}")
+
+threading.Thread(target=_startup, daemon=True).start()
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -73,13 +92,18 @@ def health():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        auth_key = request.headers.get('X-Webhook-Key')
+        data = request.get_json(silent=True)
+        logger.info(f"Webhook received: {data}")
+
+        if data is None:
+            logger.warning("Failed to parse JSON body — missing or invalid Content-Type")
+            return jsonify({'error': 'Invalid or missing JSON body'}), 400
+
+        # Authenticate via header or body key
+        auth_key = request.headers.get('X-Webhook-Key') or request.headers.get('Authorization', '').replace('Bearer ', '') or data.get('key', '')
         if auth_key != WEBHOOK_KEY:
             logger.warning(f"Unauthorized webhook attempt with key: {auth_key}")
             return jsonify({'error': 'Unauthorized'}), 401
-
-        data = request.get_json()
-        logger.info(f"Webhook received: {data}")
 
         indicator = data.get('indicator')
         signal = data.get('signal')
@@ -125,18 +149,26 @@ def process_3commas_webhook(indicator):
             logger.warning(f"Failed to parse JSON body for {indicator} webhook — missing or invalid Content-Type")
             return jsonify({'error': 'Invalid or missing JSON body. Ensure the request body is valid JSON.'}), 400
 
+        # Authenticate via header or body key
+        auth_key = request.headers.get('X-Webhook-Key') or request.headers.get('Authorization', '').replace('Bearer ', '') or data.get('key', '')
+        if auth_key != WEBHOOK_KEY:
+            logger.warning(f"Unauthorized webhook attempt with key: {auth_key}")
+            return jsonify({'error': 'Unauthorized'}), 401
+
         action = data.get('action', '').lower()
 
         # Convert 3Commas action to buy/sell signal
-        if action == 'enter_long':
-            signal = 'Buy'
-        elif action == 'enter_short':
-            signal = 'Sell'
-        elif action == 'close_long':
-            signal = 'Sell'
-        elif action == 'close_short':
-            signal = 'Buy'
-        else:
+        # Handles both close_* and exit_* naming conventions
+        action_map = {
+            'enter_long': 'Buy',
+            'enter_short': 'Sell',
+            'exit_long': 'Sell',
+            'exit_short': 'Buy',
+            'close_long': 'Sell',
+            'close_short': 'Buy',
+        }
+        signal = action_map.get(action)
+        if signal is None:
             logger.warning(f"Unknown 3Commas action: {action}")
             return jsonify({'error': f'Unknown action: {action}'}), 400
 
