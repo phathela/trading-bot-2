@@ -89,6 +89,7 @@ class BybitTrader:
             )
             if response['retCode'] == 0:
                 logger.info(f"Leverage set to {leverage}x for {symbol}")
+                self.leverage = leverage
                 return True
             else:
                 logger.error(f"Error setting leverage: {response['retMsg']}")
