@@ -77,7 +77,7 @@ def _startup():
     try:
         time.sleep(2)  # Avoid Bybit rate limit on startup
         trader.balance_usage = 0.90
-        trader.set_leverage(symbol=SYMBOL, leverage=8)
+        trader.set_leverage(symbol=SYMBOL, leverage=13)
         sync_position_state()
         logger.info(f"Bot initialized with leverage={trader.leverage}x, balance_usage={trader.balance_usage*100}%")
     except Exception as e:
