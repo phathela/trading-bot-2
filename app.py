@@ -34,12 +34,18 @@ indicator_signals = {
 }
 
 
-def sync_position_state():
+def sync_position_state(startup_init=False):
     """Query Bybit and align indicator_signals with the real position state.
 
     Called both on startup and at the start of every process_trade_signals()
     invocation so that positions closed externally (stop loss, manual close,
     another bot) are detected before any trade action is attempted.
+
+    Args:
+        startup_init: When True (startup only), also initializes indicator signals
+                      to match the open position so signals aren't lost on restart.
+                      When False (during trading), only syncs trade_active/position_side
+                      so incoming indicator signals are NOT overwritten.
     """
     logger.info("=== Position sync: querying Bybit for real position state ===")
     try:
@@ -47,7 +53,7 @@ def sync_position_state():
         indicator_signals['trade_active'] = result['active']
         indicator_signals['position_side'] = result['side']
 
-        if result['active']:
+        if result['active'] and startup_init:
             # Initialize indicator signals to match the open position
             # so signals aren't lost on restart (TradingView only re-sends on
             # condition change, so a restart would leave one indicator null)
@@ -61,6 +67,11 @@ def sync_position_state():
                 f"Startup sync complete — POSITION FOUND: "
                 f"trade_active=True, position_side='{result['side']}', "
                 f"indicators initialized to match position"
+            )
+        elif result['active']:
+            logger.info(
+                f"Position sync: trade_active=True, position_side='{result['side']}'"
+                f" — indicators left unchanged"
             )
         else:
             logger.info(
@@ -78,7 +89,7 @@ def _startup():
         time.sleep(2)  # Avoid Bybit rate limit on startup
         trader.balance_usage = 0.90
         trader.set_leverage(symbol=SYMBOL, leverage=13)
-        sync_position_state()
+        sync_position_state(startup_init=True)
         logger.info(f"Bot initialized with leverage={trader.leverage}x, balance_usage={trader.balance_usage*100}%")
     except Exception as e:
         logger.error(f"Startup init failed (bot running in degraded mode): {str(e)}")
